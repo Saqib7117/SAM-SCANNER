@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>DocScan Pro</title>
+  <!-- jsPDF for PDF generation -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <!-- Tesseract.js for client-side OCR -->
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    body { background: #121212; color: #fff; display: flex; flex-direction: column; min-height: 100vh; }
+    header { padding: 14px; text-align: center; background: #1e1e1e; font-size: 1.1rem; font-weight: 600; }
+    .viewport { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 12px; }
+    video, canvas { max-width: 100%; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.5); }
+    .controls { background: #1e1e1e; padding: 16px; border-top: 1px solid #333; display: flex; flex-direction: column; gap: 10px; }
+    .btn-row { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+    button { padding: 10px 16px; border-radius: 6px; border: none; font-size: 0.9rem; font-weight: 500; cursor: pointer; background: #2563eb; color: #fff; }
+    button.secondary { background: #374151; }
+    button.accent { background: #059669; }
+    button:disabled { opacity: 0.5; }
+    #ocrResult { margin-top: 10px; padding: 10px; background: #2a2a2a; border-radius: 6px; font-size: 0.85rem; max-height: 120px; overflow-y: auto; white-space: pre-wrap; display: none; }
+  </style>
+</head>
+<body>
+
+  <header>Document Scanner</header>
+
+  <div class="viewport">
+    <video id="camera" autoplay playsinline></video>
+    <canvas id="canvas" style="display: none;"></canvas>
+    <div id="ocrResult"></div>
+  </div>
+
+  <div class="controls">
+    <div class="btn-row" id="captureControls">
+      <button id="snapBtn">Capture Document</button>
+      <button class="secondary" id="switchCameraBtn">Flip Camera</button>
+    </div>
+
+    <div class="btn-row" id="editControls" style="display: none;">
+      <button class="secondary" onclick="applyFilter('magic')">Magic Color</button>
+      <button class="secondary" onclick="applyFilter('bw')">B&W</button>
+      <button class="secondary" onclick="applyFilter('gray')">Grayscale</button>
+      <button class="secondary" onclick="applyFilter('reset')">Reset</button>
+    </div>
+
+    <div class="btn-row" id="actionControls" style="display: none;">
+      <button class="accent" id="exportPdfBtn">Export PDF</button>
+      <button class="accent" id="ocrBtn">Run OCR</button>
+      <button class="secondary" id="retakeBtn">Retake</button>
+    </div>
+  </div>
+
+  <script>
+    const video = document.getElementById("camera");
+    const canvas = document.getElementById("canvas");
+    const ctx = canvas.getContext("2d");
+    let currentStream = null;
+    let facingMode = "environment"; // Rear camera by default
+    let originalImageData = null;
+
+    async function startCamera() {
+      if (currentStream) {
+        currentStream.getTracks().forEach(track => track.stop());
+      }
+      try {
+        currentStream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: facingMode, width: { ideal: 1920 }, height: { ideal: 1080 } },
+          audio: false
+        });
+        video.srcObject = currentStream;
+        video.style.display = "block";
+        canvas.style.display = "none";
+      } catch (err) {
+        alert("Camera access denied or unavailable: " + err.message);
+      }
+    }
+
+    document.getElementById("switchCameraBtn").addEventListener("click", () => {
+      facingMode = facingMode === "environment" ? "user" : "environment";
+      startCamera();
+    });
+
+    document.getElementById("snapBtn").addEventListener("click", () => {
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      originalImageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+
+      video.style.display = "none";
+      canvas.style.display = "block";
+      document.getElementById("captureControls").style.display = "none";
+      document.getElementById("editControls").style.display = "flex";
+      document.getElementById("actionControls").style.display = "flex";
+    });
+
+    document.getElementById("retakeBtn").addEventListener("click", () => {
+      document.getElementById("ocrResult").style.display = "none";
+      document.getElementById("editControls").style.display = "none";
+      document.getElementById("actionControls").style.display = "none";
+      document.getElementById("captureControls").style.display = "flex";
+      startCamera();
+    });
+
+    // Image Enhancement Filters
+    function applyFilter(type) {
+      if (!originalImageData) return;
+      ctx.putImageData(originalImageData, 0, 0);
+      const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const d = imgData.data;
+
+      for (let i = 0; i < d.length; i += 4) {
+        const r = d[i], g = d[i+1], b = d[i+2];
+        const luminance = 0.299 * r + 0.587 * g + 0.114 * b;
+
+        if (type === "gray") {
+          d[i] = d[i+1] = d[i+2] = luminance;
+        } else if (type === "bw") {
+          // High-contrast clean thresholding
+          const val = luminance > 128 ? 255 : 0;
+          d[i] = d[i+1] = d[i+2] = val;
+        } else if (type === "magic") {
+          // Contrast and lightness boost for scanned documents
+          d[i] = Math.min(255, r * 1.25);
+          d[i+1] = Math.min(255, g * 1.25);
+          d[i+2] = Math.min(255, b * 1.25);
+        }
+      }
+      if (type !== "reset") ctx.putImageData(imgData, 0, 0);
+    }
+
+    // Export to PDF
+    document.getElementById("exportPdfBtn").addEventListener("click", () => {
+      const { jsPDF } = window.jspdf;
+      const pdf = new jsPDF({
+        orientation: canvas.width > canvas.height ? "l" : "p",
+        unit: "px",
+        format: [canvas.width, canvas.height]
+      });
+      pdf.addImage(canvas.toDataURL("image/jpeg", 0.95), "JPEG", 0, 0, canvas.width, canvas.height);
+      pdf.save("scan_" + Date.now() + ".pdf");
+    });
+
+    // Client-side OCR
+    document.getElementById("ocrBtn").addEventListener("click", async () => {
+      const ocrDiv = document.getElementById("ocrResult");
+      ocrDiv.style.display = "block";
+      ocrDiv.innerText = "Extracting text... please wait.";
+      try {
+        const worker = await Tesseract.createWorker("eng");
+        const res = await worker.recognize(canvas);
+        ocrDiv.innerText = res.data.text || "No text detected.";
+        await worker.terminate();
+      } catch (err) {
+        ocrDiv.innerText = "OCR Error: " + err.message;
+      }
+    });
+
+    // Initialize camera on page load
+    window.onload = startCamera;
+  </script>
+</body>
+</html>
